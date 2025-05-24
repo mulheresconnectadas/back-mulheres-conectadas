@@ -5,7 +5,9 @@ import os
 
 #DATABASE_URL = "postgresql://neondb_owner:npg_cYOH9bC7mKda@ep-falling-base-acq4r8c0-pooler.sa-east-1.aws.neon.tech/neondb?sslmode=require"
 
-DATABASE_URL = "postgresql://postgres:OuYYQdwFSBWFDihDyWELJaiUzfzvKfko@turntable.proxy.rlwy.net:26001/railway"
+#DATABASE_URL = "postgresql://postgres:OuYYQdwFSBWFDihDyWELJaiUzfzvKfko@turntable.proxy.rlwy.net:26001/railway"
+
+DATABASE_URL = "postgresql://neondb_owner:npg_m4StosfV8Cvb@ep-misty-pine-ack5p4ic-pooler.sa-east-1.aws.neon.tech/neondb?sslmode=require"
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

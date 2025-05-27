@@ -138,6 +138,7 @@ async def validar_email(request: Request, db: Session = Depends(get_db)):
     return {"valid": True}
 
 
+
 @router.post("/admin/login")
 def login_admin(admin: AdminLoginRequest):
     user = ADMIN_USERS.get(admin.email)
@@ -291,7 +292,7 @@ def presencial_top_cidades(db: Session = Depends(get_db)):
             model.Participante.deseja_participar_presencial,
             func.count()
         )
-        .filter(model.Participante.cidade.in_(subquery))
+        .filter(model.Participante.cidade.in_(select(subquery.c.cidade)))
         .group_by(
             model.Participante.cidade,
             model.Participante.deseja_participar_presencial

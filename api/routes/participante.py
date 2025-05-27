@@ -5,6 +5,10 @@ from sqlalchemy.exc import IntegrityError
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, EmailStr, ValidationError
 from sqlalchemy import func
+from io import StringIO
+import pandas as pd
+import codecs
+from sqlalchemy import select
 
 from api import model, schema
 from api.database import get_db
@@ -30,6 +34,23 @@ ADMIN_USERS = {
     "gesyca@admin.com": {"senha": "senhaGesyca123", "nome": "Gesyca"},
     "alessandra@admin.com": {"senha": "senhaAlessandra123", "nome": "Alessandra"},
 }
+
+def to_csv_response(data, columns, filename):
+    import pandas as pd
+
+    df = pd.DataFrame(data, columns=columns)
+    stream = StringIO()
+    df.to_csv(stream, index=False)
+    stream.seek(0)
+
+    # Adiciona BOM para suportar acentos no Excel
+    bom = codecs.BOM_UTF8.decode('utf-8')
+    csv_content = bom + stream.read()
+    stream = StringIO(csv_content)
+
+    return StreamingResponse(stream, media_type="text/csv", headers={
+        "Content-Disposition": f"attachment; filename={filename}"
+    })
 
 class AdminLoginRequest(BaseModel):
     email: EmailStr
@@ -323,7 +344,7 @@ def exportar_inscricoes(db: Session = Depends(get_db)):
     # Nome das colunas baseado nos atributos do modelo
     colunas = [column.name for column in model.Participante.__table__.columns]
 
-    # Criar buffer para armazenar o CSV
+    # Criar buffer e writer com BOM
     output = io.StringIO()
     writer = csv.writer(output)
 
@@ -335,13 +356,177 @@ def exportar_inscricoes(db: Session = Depends(get_db)):
         linha = [getattr(p, col) for col in colunas]
         writer.writerow(linha)
 
-    output.seek(0)  # Volta ao início do arquivo para leitura
+    # Adicionar BOM manualmente
+    output.seek(0)
+    bom = codecs.BOM_UTF8.decode("utf-8")
+    csv_com_bom = bom + output.read()
 
-    # Envia o CSV como streaming para o frontend baixar
+    # Novo stream com conteúdo final
+    final_stream = io.StringIO(csv_com_bom)
+
     return StreamingResponse(
-        output,
+        final_stream,
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=inscricoes.csv"}
     )
 
+
+@router.get("/inscricoes/stats/cidade/csv")
+def get_csv_por_cidade(db: Session = Depends(get_db)):
+    data = (
+        db.query(Participante.cidade, func.count().label("total"))
+        .group_by(Participante.cidade)
+        .all()
+    )
+    return to_csv_response(data, ["Cidade", "Total"], "inscricoes_por_cidade.csv")
+
+
+@router.get("/inscricoes/stats/escolaridade/csv")
+def get_csv_por_escolaridade(db: Session = Depends(get_db)):
+    data = (
+        db.query(Participante.escolaridade, func.count().label("total"))
+        .group_by(Participante.escolaridade)
+        .all()
+    )
+    escolaridade_map = {
+        "fundamental completo": "Fundamental Completo",
+        "fundamental incompleto": "Fundamental Incompleto",
+        "medio completo": "Médio Completo",
+        "medio incompleto": "Médio Incompleto",
+        "superior completo": "Superior Completo",
+        "superior incompleto": "Superior Incompleto",
+        "outro": "Outro"
+    }
+    data = [(escolaridade_map.get(e.lower(), e), t) for e, t in data]
+    return to_csv_response(data, ["Escolaridade", "Total"], "inscricoes_por_escolaridade.csv")
+
+
+@router.get("/inscricoes/stats/situacao_trabalho/csv")
+def get_csv_por_situacao_trabalho(db: Session = Depends(get_db)):
+    data = (
+        db.query(Participante.situacao_trabalho, func.count().label("total"))
+        .group_by(Participante.situacao_trabalho)
+        .all()
+    )
+    situacao_trabalho_map = {
+        "empregado": "Empregado",
+        "desempregado": "Desempregado",
+        "estudante": "Estudante",
+        "autonomo": "Autônomo",
+        "outro": "Outro"
+    }
+    data = [(situacao_trabalho_map.get(s.lower(), s), t) for s, t in data]
+    return to_csv_response(data, ["Situação de Trabalho", "Total"], "inscricoes_por_situacao_trabalho.csv")
+
+
+
+@router.get("/escolaridade_por_etnia/csv")
+def csv_escolaridade_por_etnia(db: Session = Depends(get_db)):
+    resultados = (
+        db.query(model.Participante.etnia, model.Participante.escolaridade, func.count())
+        .group_by(model.Participante.etnia, model.Participante.escolaridade)
+        .all()
+    )
+
+    # Mapas de normalização
+    etnia_map = {
+        "branca": "Branca",
+        "parda": "Parda",
+        "preta": "Preta",
+        "indigena": "Indígena",
+        "amarela": "Amarela",
+        "outra": "Outra"
+    }
+
+    escolaridade_map = {
+        "fundamental completo": "Fundamental Completo",
+        "fundamental incompleto": "Fundamental Incompleto",
+        "medio completo": "Médio Completo",
+        "medio incompleto": "Médio Incompleto",
+        "superior completo": "Superior Completo",
+        "superior incompleto": "Superior Incompleto",
+        "outro": "Outro"
+    }
+
+    # Preparar listas únicas com normalização
+    etnias_raw = {r[0] for r in resultados}
+    escolaridades_raw = {r[1] for r in resultados}
+
+    etnias = sorted([etnia_map.get(e.lower(), e) for e in etnias_raw])
+    escolaridades = sorted([escolaridade_map.get(es.lower(), es) for es in escolaridades_raw])
+
+    # Inicializar estrutura de dados
+    data_map = {e: {es: 0 for es in escolaridades} for e in etnias}
+
+    # Preencher contagens
+    for etnia_raw, escolaridade_raw, count in resultados:
+        etnia = etnia_map.get(etnia_raw.lower(), etnia_raw)
+        escolaridade = escolaridade_map.get(escolaridade_raw.lower(), escolaridade_raw)
+        data_map[etnia][escolaridade] = count
+
+    # Montar DataFrame
+    rows = []
+    for etnia in etnias:
+        row = {"Etnia": etnia}
+        row.update(data_map[etnia])
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    return to_csv_response(df.values.tolist(), df.columns.tolist(), "escolaridade_por_etnia.csv")
+
+@router.get("/presencial_top_cidades/csv")
+def csv_presencial_top_cidades(db: Session = Depends(get_db)):
+    # Top 3 cidades com mais inscritos
+    subquery = (
+    db.query(model.Participante.cidade)
+    .group_by(model.Participante.cidade)
+    .order_by(func.count().desc())
+    .limit(3)
+    .subquery()
+    )
+
+    resultados = (
+    db.query(
+        model.Participante.cidade,
+        model.Participante.deseja_participar_presencial,
+        func.count()
+    )
+    .filter(model.Participante.cidade.in_(select(subquery.c.cidade)))  # <- CORRIGIDO
+    .group_by(
+        model.Participante.cidade,
+        model.Participante.deseja_participar_presencial
+    )
+    .all()
+)
+
+    cidades = sorted(list({r[0] for r in resultados}))
+
+    opcoes_labels = ['Sim', 'Não', 'Talvez']
+    normalizacao = {
+        'sim': 'Sim',
+        'nao': 'Não',
+        'não': 'Não',
+        'talvez': 'Talvez'
+    }
+
+    # Inicializar dados
+    data_map = {
+        cidade: {label: 0 for label in opcoes_labels}
+        for cidade in cidades
+    }
+
+    for cidade, deseja_presencial, count in resultados:
+        resposta_normalizada = normalizacao.get(deseja_presencial.lower(), deseja_presencial)
+        if resposta_normalizada in opcoes_labels:
+            data_map[cidade][resposta_normalizada] = count
+
+    # Montar DataFrame
+    rows = []
+    for cidade in cidades:
+        row = {"Cidade": cidade}
+        row.update(data_map[cidade])
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    return to_csv_response(df.values.tolist(), df.columns.tolist(), "presencial_top_cidades.csv")
 
